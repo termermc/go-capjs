@@ -72,10 +72,11 @@ type Driver struct {
 	opts   DriverOptions
 	rlOpts *RateLimitOptions
 
-	delExpiredStmt    *sql.Stmt
-	insertStmt        *sql.Stmt
-	getIpCountStmt    *sql.Stmt
-	getUnredeemedStmt *sql.Stmt
+	delExpiredStmt     *sql.Stmt
+	insertStmt         *sql.Stmt
+	getIpCountStmt     *sql.Stmt
+	getUnredeemedStmt  *sql.Stmt
+	useRedeemTokenStmt *sql.Stmt
 
 	isClosed bool
 }
@@ -164,6 +165,19 @@ func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
 		return nil, err
 	}
 	d.getUnredeemedStmt = stmt
+
+	stmt, err = sqlite.Prepare(`
+		update cap_challenge
+		set is_redeemed = 1
+		where
+		    redeem_token = ? and
+		    is_redeemed = 0 and
+		    expires_ts < ?
+	`)
+	if err != nil {
+		return nil, err
+	}
+	d.useRedeemTokenStmt = stmt
 
 	go d.delExpiredDaemon()
 
@@ -299,5 +313,16 @@ func (d *Driver) GetUnredeemedChallenge(ctx context.Context, challengeToken stri
 }
 
 func (d *Driver) UseRedeemToken(ctx context.Context, redeemToken string) (wasRedeemed bool, err error) {
-	return false, nil
+	res, err := d.useRedeemTokenStmt.ExecContext(ctx, redeemToken, time.Now().Unix())
+	if err != nil {
+		return false, fmt.Errorf(`sqlitedriver: failed to use redeem token "%s": %w`, redeemToken, err)
+	}
+
+	var count int64
+	count, err = res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf(`sqlitedriver: failed to check if redeem token "%s" was already redeemed: %w`, redeemToken, err)
+	}
+
+	return count > 0, nil
 }
