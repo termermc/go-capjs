@@ -3,6 +3,8 @@ package sqlitedriver
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"time"
@@ -60,16 +62,26 @@ type DriverOptions struct {
 	RateLimitOpts *RateLimitOptions
 }
 
+// Driver is the SQLite driver for Cap.
+// It stores challenges in an SQLite database, and optionally uses it for rate limiting.
+//
+// Note that the DB used to create the Driver will be closed when Driver.Close is called.
+// The DB should be in WAL mode for ideal performance.
 type Driver struct {
 	sqlite *sql.DB
 	opts   DriverOptions
 	rlOpts *RateLimitOptions
 
-	delExpiredStmt *sql.Stmt
+	delExpiredStmt    *sql.Stmt
+	insertStmt        *sql.Stmt
+	getIpCountStmt    *sql.Stmt
+	getUnredeemedStmt *sql.Stmt
 
 	isClosed bool
 }
 
+// NewDriver creates a new SQLite driver with the specified DB and options.
+// Note that the DB passed in will be closed when Driver.Close is called.
 func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
 	d := &Driver{
 		sqlite: sqlite,
@@ -113,8 +125,47 @@ func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
 	}
 	d.delExpiredStmt = stmt
 
+	stmt, err = sqlite.Prepare(`
+		insert into cap_challenge (
+		    challenge_token,
+		    redeem_token,
+		    challenge_difficulty,
+		    challenge_count,
+		    challenge_salt_size,
+		    ip_version,
+		    ip_significant_bits,
+		    expires_ts,
+		) values (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return nil, err
+	}
+	d.insertStmt = stmt
+
+	stmt, err = sqlite.Prepare("select count(*) from cap_challenge where ip_version = ? and ip_significant_bits = ? and expires_ts > ?")
+	if err != nil {
+		return nil, err
+	}
+	d.getIpCountStmt = stmt
+
+	stmt, err = sqlite.Prepare(`
+		select
+		    redeem_token,
+		    challenge_difficulty,
+		    challenge_count,
+		    challenge_salt_size,
+		    expires_ts
+		where
+			challenge_token = ? and
+			is_redeemed = 0 and
+			expires_ts > ?
+	`)
+	if err != nil {
+		return nil, err
+	}
+	d.getUnredeemedStmt = stmt
+
 	go d.delExpiredDaemon()
-	// TODO Daemon, also Close method for ending daemon and closing prepared statements
 
 	return d, nil
 }
@@ -151,12 +202,100 @@ func (d *Driver) delExpiredDaemon() {
 	}
 }
 
+func (d *Driver) Close() error {
+	d.isClosed = true
+
+	errs := make([]error, 0, 5)
+
+	if err := d.delExpiredStmt.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := d.insertStmt.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := d.getIpCountStmt.Close(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := d.sqlite.Close(); err != nil {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf(`failed to Close SQLite Cap driver: %w`, errors.Join(errs...))
+	}
+
+	return nil
+}
+
 func (d *Driver) Store(ctx context.Context, challenge *cap.Challenge, ip *netip.Addr) error {
+	var ipVerPtr *int
+	var ipIntPtr *int64
+
+	// Rate limit if enabled.
+	if ip != nil && d.opts.RateLimitOpts != nil {
+		rl := d.opts.RateLimitOpts
+		ipVer, ipInt := cap.IpToInt64(*ip, rl.IPv4SignificantBits, rl.IPv6SignificantBits)
+		ipVerPtr = &ipVer
+		ipIntPtr = &ipInt
+		windowStart := time.Now().Add(-rl.MaxChallengesWindow)
+
+		row := d.getIpCountStmt.QueryRowContext(ctx, ipVer, ipInt, windowStart.Unix())
+
+		var count int
+		if err := row.Scan(&count); err != nil {
+			return fmt.Errorf(`sqlitedriver: failed to get number of Cap challenges by IP %s: %w`, ip.String(), err)
+		}
+
+		if count > rl.MaxChallengesPerIp {
+			return cap.ErrRateLimited
+		}
+	}
+
+	p := challenge.Params
+	_, err := d.insertStmt.ExecContext(ctx,
+		challenge.ChallengeToken,
+		challenge.RedeemToken,
+		p.Difficulty,
+		p.Count,
+		p.SaltSize,
+		ipVerPtr,
+		ipIntPtr,
+		challenge.Expires.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf(`sqlitedriver: failed to insert Cap challenge: %w`, err)
+	}
+
 	return nil
 }
 
 func (d *Driver) GetUnredeemedChallenge(ctx context.Context, challengeToken string) (*cap.Challenge, error) {
-	return nil, nil
+	row := d.getUnredeemedStmt.QueryRowContext(ctx, challengeToken)
+
+	var redeemToken string
+	var difficulty int
+	var count int
+	var saltSize int
+	var expTs int64
+	if err := row.Scan(&redeemToken, &difficulty, &count, &saltSize, &expTs); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf(`sqlitedriver: failed to get challenge with token "%s": %w`, challengeToken, err)
+	}
+
+	return &cap.Challenge{
+		ChallengeToken: challengeToken,
+		RedeemToken:    redeemToken,
+		Params: cap.ChallengeParams{
+			Difficulty: difficulty,
+			Count:      count,
+			SaltSize:   saltSize,
+		},
+		Expires: time.Unix(expTs, 0),
+	}, nil
 }
 
 func (d *Driver) UseRedeemToken(ctx context.Context, redeemToken string) (wasRedeemed bool, err error) {

@@ -26,9 +26,9 @@ create table cap_challenge (
     challenge_count      integer not null,
     challenge_salt_size  integer not null,
     redeem_token         text    not null,
-    is_redeemed          integer not null,
-    ip_version           integer not null,
-    ip_significant_bits  integer not null,
+    is_redeemed          integer default 0 not null,
+    ip_version           integer null,
+    ip_significant_bits  integer null,
     expires_ts           integer not null,
     created_ts           integer default (strftime('%s', 'now')) not null
 );
