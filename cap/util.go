@@ -2,6 +2,7 @@ package cap
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -52,7 +53,7 @@ func prng(seed string, length int) string {
 // integer.
 //
 // If the significant bits parameters are out of bounds, this function panics.
-func IpToInt64(addr *netip.Addr, ipVSignificantBits int, ipV6SignificantBits int) (version int, integer int64) {
+func IpToInt64(addr *netip.Addr, ipV4SignificantBits int, ipV6SignificantBits int) (version int, integer int64) {
 	if addr.Is6() {
 		byteCount := ipV6SignificantBits / 8
 		if byteCount > 64 {
@@ -71,7 +72,7 @@ func IpToInt64(addr *netip.Addr, ipVSignificantBits int, ipV6SignificantBits int
 		version = 6
 		integer = int64(binary.BigEndian.Uint64(beBytes[:]))
 	} else {
-		byteCount := ipVSignificantBits / 8
+		byteCount := ipV4SignificantBits / 8
 		var beBytes [8]byte
 		for i, b := range addr.As4() {
 			if i >= byteCount {
@@ -86,4 +87,15 @@ func IpToInt64(addr *netip.Addr, ipVSignificantBits int, ipV6SignificantBits int
 	}
 
 	return
+}
+
+// Int64ToHex converts an int64 into a hex string.
+// It uses little endian byte order.
+func Int64ToHex(v int64) string {
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], uint64(v))
+	// 8 bytes -> 16 hex chars
+	dst := make([]byte, 16)
+	hex.Encode(dst, b[:])
+	return string(dst)
 }

@@ -95,7 +95,7 @@ var DefaultChallengeParams = ChallengeParams{
 }
 
 // DefaultValidDuration is the default duration that a Cap challenge is valid before it expires.
-var DefaultValidDuration = 10 * time.Minute
+const DefaultValidDuration = 10 * time.Minute
 
 // ChallengeResponse is a challenge response that can be sent to a client that requested one.
 // It can be serialized to JSON and used as the JSON response for the challenge endpoint.
