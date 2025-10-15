@@ -249,7 +249,7 @@ func (d *Driver) Store(ctx context.Context, challenge *cap.Challenge, ip *netip.
 	// Rate limit if enabled.
 	if ip != nil && d.opts.RateLimitOpts != nil {
 		rl := d.opts.RateLimitOpts
-		ipVer, ipInt := cap.IpToInt64(*ip, rl.IPv4SignificantBits, rl.IPv6SignificantBits)
+		ipVer, ipInt := cap.IpToInt64(ip, rl.IPv4SignificantBits, rl.IPv6SignificantBits)
 		ipVerPtr = &ipVer
 		ipIntPtr = &ipInt
 		windowStart := time.Now().Add(-rl.MaxChallengesWindow)

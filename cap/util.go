@@ -52,7 +52,7 @@ func prng(seed string, length int) string {
 // integer.
 //
 // If the significant bits parameters are out of bounds, this function panics.
-func IpToInt64(addr netip.Addr, ipVSignificantBits int, ipV6SignificantBits int) (version int, integer int64) {
+func IpToInt64(addr *netip.Addr, ipVSignificantBits int, ipV6SignificantBits int) (version int, integer int64) {
 	if addr.Is6() {
 		byteCount := ipV6SignificantBits / 8
 		if byteCount > 64 {
