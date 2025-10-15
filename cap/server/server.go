@@ -7,12 +7,32 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 )
 
-// IpExtractorFunc is a function that extracts the client IP from a request.
+// IPExtractorFunc is a function that extracts the client IP from a request.
 // If the function returns nil, the IP cannot be determined.
-type IpExtractorFunc func(req *http.Request) *netip.Addr
+type IPExtractorFunc func(req *http.Request) *netip.Addr
+
+// RemoteAddrIPExtractor is an IPExtractorFunc that uses the request's remote address.
+// This SHOULD NOT be used in environments where the application is behind a reverse proxy.
+var RemoteAddrIPExtractor IPExtractorFunc = func(req *http.Request) *netip.Addr {
+	remoteAddr := req.RemoteAddr
+
+	colonIdx := strings.IndexByte(remoteAddr, ':')
+	if colonIdx == -1 {
+		return nil
+	}
+
+	addrPort, err := netip.ParseAddrPort(req.RemoteAddr)
+	if err != nil {
+		return nil
+	}
+
+	addr := addrPort.Addr()
+	return &addr
+}
 
 // ErrorHandlerFunc is a function that handles an error and optionally writes an HTTP response.
 // The error passed to it will never be nil.
@@ -33,7 +53,7 @@ type ChallengeHandlerOpts struct {
 	// IpExtractor is the function used to extract the IP from a request.
 	// It is used for rate limiting.
 	// If unspecified/nil, rate limiting will be disabled.
-	IpExtractor IpExtractorFunc
+	IpExtractor IPExtractorFunc
 }
 
 // Server is an implementation of the Cap server endpoints used to issue and validate challenges.
@@ -43,7 +63,7 @@ type Server struct {
 
 	params        pkg.ChallengeParams
 	validDuration time.Duration
-	ipFunc        IpExtractorFunc
+	ipFunc        IPExtractorFunc
 	errFunc       ErrorHandlerFunc
 }
 
@@ -83,7 +103,7 @@ func WithValidDuration(duration time.Duration) func(h *Server) {
 
 // WithIPForRateLimit uses the specified IP extractor function to pass IPs to the driver for rate limiting.
 // Without an IP extractor function, the driver cannot perform rate limiting, even if it is enabled.
-func WithIPForRateLimit(ipFunc IpExtractorFunc) func(h *Server) {
+func WithIPForRateLimit(ipFunc IPExtractorFunc) func(h *Server) {
 	return func(h *Server) {
 		h.ipFunc = ipFunc
 	}

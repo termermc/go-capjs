@@ -8,7 +8,7 @@ import (
 	"github.com/termermc/go-capjs/cap/server"
 	"github.com/termermc/go-capjs/sqlitedriver"
 	"net/http"
-	"net/netip"
+	"time"
 )
 
 const page = `
@@ -43,7 +43,10 @@ func main() {
 	}
 
 	driver, err := sqlitedriver.NewDriver(db,
-		sqlitedriver.WithRateLimit(),
+		sqlitedriver.WithRateLimit(
+			cap.WithMaxChallengesPerIP(60),
+			cap.WithMaxChallengesWindow(1*time.Minute),
+		),
 	)
 	if err != nil {
 		panic(err)
@@ -52,14 +55,9 @@ func main() {
 	capSvc := cap.NewCap(driver)
 
 	capServer := server.NewServer(capSvc,
-		server.WithIPForRateLimit(func(req *http.Request) *netip.Addr {
-			ip, err := netip.ParseAddr(req.RemoteAddr)
-			if err == nil {
-				return &ip
-			} else {
-				return nil
-			}
-		}),
+		// Using remote address for rate limiting.
+		// Do not do this in any environment where your application is behind a reverse proxy.
+		server.WithIPForRateLimit(server.RemoteAddrIPExtractor),
 	)
 
 	mux := http.NewServeMux()
