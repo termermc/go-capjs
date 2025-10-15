@@ -101,7 +101,7 @@ func NewDriver(sqlite *sql.DB, opts ...func(d *Driver)) (*Driver, error) {
 		    challenge_salt_size,
 		    ip_version,
 		    ip_significant_bits,
-		    expires_ts,
+		    expires_ts
 		) values (?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -122,6 +122,7 @@ func NewDriver(sqlite *sql.DB, opts ...func(d *Driver)) (*Driver, error) {
 		    challenge_count,
 		    challenge_salt_size,
 		    expires_ts
+		from cap_challenge
 		where
 			challenge_token = ? and
 			is_redeemed = 0 and
@@ -138,7 +139,7 @@ func NewDriver(sqlite *sql.DB, opts ...func(d *Driver)) (*Driver, error) {
 		where
 		    redeem_token = ? and
 		    is_redeemed = 0 and
-		    expires_ts < ?
+		    expires_ts > ?
 	`)
 	if err != nil {
 		return nil, err
@@ -251,7 +252,7 @@ func (d *Driver) Store(ctx context.Context, challenge *cap.Challenge, ip *netip.
 }
 
 func (d *Driver) GetUnredeemedChallenge(ctx context.Context, challengeToken string) (*cap.Challenge, error) {
-	row := d.getUnredeemedStmt.QueryRowContext(ctx, challengeToken)
+	row := d.getUnredeemedStmt.QueryRowContext(ctx, challengeToken, time.Now().Unix())
 
 	var redeemToken string
 	var difficulty int
