@@ -34,6 +34,39 @@ var RemoteAddrIPExtractor IPExtractorFunc = func(req *http.Request) *netip.Addr 
 	return &addr
 }
 
+// NewHeaderIPExtractor creates a new IPExtractorFunc that gets the request IP from a header.
+// If the header is not present or does not contain a valid IP, the extractor returns nil.
+// If the header is a comma-separated list, gets the leftmost entry.
+//
+// Example:
+// NewHeaderIPExtractor("X-Forwarded-For")
+func NewHeaderIPExtractor(header string) IPExtractorFunc {
+	return func(req *http.Request) *netip.Addr {
+		val := req.Header.Get(header)
+		if val == "" {
+			return nil
+		}
+
+		// Check if the header is a comma-separated list.
+		// Use the leftmost item if so.
+		var str string
+		commaIdx := strings.IndexByte(val, ',')
+		if commaIdx == -1 {
+			str = val
+		} else {
+			str = str[:commaIdx]
+		}
+
+		// Try parsing IP.
+		addr, err := netip.ParseAddr(str)
+		if err != nil {
+			return nil
+		}
+
+		return &addr
+	}
+}
+
 // ErrorHandlerFunc is a function that handles an error and optionally writes an HTTP response.
 // The error passed to it will never be nil.
 type ErrorHandlerFunc func(err error, res http.ResponseWriter, req *http.Request)
