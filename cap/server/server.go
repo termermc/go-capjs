@@ -81,9 +81,9 @@ func WithValidDuration(duration time.Duration) func(h *Server) {
 	}
 }
 
-// WithIpForRateLimit uses the specified IP extractor function to pass IPs to the driver for rate limiting.
+// WithIPForRateLimit uses the specified IP extractor function to pass IPs to the driver for rate limiting.
 // Without an IP extractor function, the driver cannot perform rate limiting, even if it is enabled.
-func WithIpForRateLimit(ipFunc IpExtractorFunc) func(h *Server) {
+func WithIPForRateLimit(ipFunc IpExtractorFunc) func(h *Server) {
 	return func(h *Server) {
 		h.ipFunc = ipFunc
 	}
@@ -100,6 +100,12 @@ func WithErrorHandler(errFunc ErrorHandlerFunc) func(h *Server) {
 // ChallengeHandler is the HTTP handler that issues new challenges.
 // Should be mounted on `/challenge`.
 func (s *Server) ChallengeHandler(res http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		res.WriteHeader(405)
+		_, _ = res.Write([]byte("method not allowed"))
+		return
+	}
+
 	ctx := req.Context()
 
 	var ip *netip.Addr
@@ -124,12 +130,18 @@ func (s *Server) ChallengeHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	enc := json.NewEncoder(res)
-	_ = enc.Encode(chalData)
+	_ = enc.Encode(chalData.ToResponse())
 }
 
 // RedeemHandler is the HTTP handler that accepts solutions and verifies them, returning a redeem token if correct and valid.
 // Should be mounted on `/redeem`.
 func (s *Server) RedeemHandler(res http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		res.WriteHeader(405)
+		_, _ = res.Write([]byte("method not allowed"))
+		return
+	}
+
 	type redeemRes struct {
 		Success bool   `json:"success"`
 		Message string `json:"message,omitempty"`
@@ -198,11 +210,4 @@ func (s *Server) RedeemHandler(res http.ResponseWriter, req *http.Request) {
 		Expires: redeemData.Expires.UnixMilli(),
 	})
 	return
-}
-
-// MountOnServeMux mounts the `/challenge` and `/redeem` handlers on the specified http.ServeMux.
-// To mount the handlers manually, reference Server.ChallengeHandler and Server.RedeemHandler.
-func (s *Server) MountOnServeMux(mux *http.ServeMux) {
-	mux.HandleFunc("/challenge", s.ChallengeHandler)
-	mux.HandleFunc("/redeem", s.RedeemHandler)
 }
