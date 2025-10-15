@@ -20,6 +20,7 @@ The most important part of Cap is that it is both effective in limiting mass spa
 The main module, [cap](./cap) provides challenge creation and validation functions, but it does not provide storage for the actual challenges.
 Instead, storage is implemented using drivers.
 This allows for multiple different ways of storing challenges, and allows the main module to stay dependency-free.
+Drivers can also implement rate limiting to prevent filling up disk/memory with challenges that will never be solved.
 
 This project includes the following modules:
 
