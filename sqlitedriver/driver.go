@@ -13,107 +13,73 @@ import (
 	"github.com/termermc/go-capjs/sqlitedriver/migration"
 )
 
-const DefaultExpiredSessionPruneInterval = 1 * time.Minute
-
-const DefaultIPv4SignificantBits = 32
-const DefaultIPv6SignificantBits = 64
-
-// RateLimitOptions are options for applying rate limiting to the Cap SQLite driver.
-// If enabled, it uses a sliding window algorithm to limit challenge creation by IP address.
-// IP addresses are truncated to a specified number of bits. For example, you can limit based
-// on the /24 subnet for IPv4 and /48 for IPv6 instead of the default /32 and /64.
-type RateLimitOptions struct {
-	// The significant bits to use for counting challenges by IPv4 address.
-	// Must be at maximum /32. Higher values will be clamped to /32.
-	// If omitted/zero, defaults to DefaultIPv4SignificantBits.
-	IPv4SignificantBits int
-
-	// The significant bits to use for counting challenges by IPv6 address.
-	// Must be at maximum /64. Higher values will be clamped to /64.
-	// If omitted/zero, defaults to DefaultIPv6SignificantBits.
-	//
-	// A maximum of /64 is allowed instead of /128 because properly configured
-	// IPv6 networks issue /64 blocks, and it is a more reliable way to limit.
-	// Allowing smaller subnets would open up the system to abuse.
-	IPv6SignificantBits int
-
-	// The maximum number of challenges to allow per IP within the window defined by MaxChallengesWindow.
-	// If 0, there is no limit.
-	MaxChallengesPerIp int
-
-	// The window in which to count challenges by IP.
-	// Precision is seconds.
-	// Uses a sliding window algorithm.
-	MaxChallengesWindow time.Duration
-}
-
-// DriverOptions are options for the Cap SQLite driver.
-type DriverOptions struct {
-	// The logger to use.
-	// If unspecified, uses slog.Default.
-	Logger *slog.Logger
-
-	// The interval at which to prune expired sessions from the database.
-	// If unspecified/zero, defaults to DefaultExpiredSessionPruneInterval.
-	ExpiredSessionPruneInterval time.Duration
-
-	// The rate limiting options to apply, if any.
-	// If nil, rate limiting will be disabled.
-	RateLimitOpts *RateLimitOptions
-}
+const DefaultPruneInterval = 1 * time.Minute
 
 // Driver is the SQLite driver for Cap.
 // It stores challenges in an SQLite database, and optionally uses it for rate limiting.
 //
 // Note that the DB used to create the Driver will be closed when Driver.Close is called.
 // The DB should be in WAL mode for ideal performance.
+//
+// Rate limiting is supported if enabled, and uses a sliding window algorithm.
 type Driver struct {
 	sqlite *sql.DB
-	opts   DriverOptions
-	rlOpts *RateLimitOptions
+
+	logger        *slog.Logger
+	pruneInterval time.Duration
+	rlOpts        *cap.RateLimitOptions
 
 	delExpiredStmt     *sql.Stmt
 	insertStmt         *sql.Stmt
-	getIpCountStmt     *sql.Stmt
+	getIPCountStmt     *sql.Stmt
 	getUnredeemedStmt  *sql.Stmt
 	useRedeemTokenStmt *sql.Stmt
 
 	isClosed bool
 }
 
+// WithLogger sets the logger.
+// When not specified, uses slog.Default.
+func WithLogger(logger *slog.Logger) func(d *Driver) {
+	return func(d *Driver) {
+		d.logger = logger
+	}
+}
+
+// WithPruneInterval sets the expired challenge prune interval.
+// When not specified, uses DefaultPruneInterval.
+func WithPruneInterval(interval time.Duration) func(d *Driver) {
+	return func(d *Driver) {
+		d.pruneInterval = interval
+	}
+}
+
+// WithRateLimit enables rate limiting and uses the specified options for it.
+func WithRateLimit(opts ...func(rl *cap.RateLimitOptions)) func(d *Driver) {
+	return func(d *Driver) {
+		rl := cap.NewDefaultRateLimitOptions()
+
+		for _, opt := range opts {
+			opt(rl)
+		}
+
+		d.rlOpts = rl
+	}
+}
+
 // NewDriver creates a new SQLite driver with the specified DB and options.
 // Note that the DB passed in will be closed when Driver.Close is called.
-func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
+func NewDriver(sqlite *sql.DB, opts ...func(d *Driver)) (*Driver, error) {
 	d := &Driver{
 		sqlite: sqlite,
-		opts:   opts,
+
+		logger:        slog.Default(),
+		pruneInterval: DefaultPruneInterval,
+		rlOpts:        nil,
 	}
 
-	if d.opts.Logger == nil {
-		d.opts.Logger = slog.Default()
-	}
-
-	if d.opts.ExpiredSessionPruneInterval == 0 {
-		d.opts.ExpiredSessionPruneInterval = DefaultExpiredSessionPruneInterval
-	}
-
-	var rlOpts RateLimitOptions
-	if opts.RateLimitOpts != nil {
-		rlOpts = *opts.RateLimitOpts
-
-		if rlOpts.IPv4SignificantBits < 1 {
-			rlOpts.IPv4SignificantBits = DefaultIPv4SignificantBits
-		} else if rlOpts.IPv4SignificantBits > 32 {
-			rlOpts.IPv4SignificantBits = 32
-		}
-
-		if rlOpts.IPv6SignificantBits < 1 {
-			rlOpts.IPv6SignificantBits = DefaultIPv6SignificantBits
-		} else if rlOpts.IPv6SignificantBits > 64 {
-			rlOpts.IPv6SignificantBits = 64
-		}
-
-		opts.RateLimitOpts = &rlOpts
+	for _, opt := range opts {
+		opt(d)
 	}
 
 	if err := migration.DoMigrations(sqlite); err != nil {
@@ -147,7 +113,7 @@ func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.getIpCountStmt = stmt
+	d.getIPCountStmt = stmt
 
 	stmt, err = sqlite.Prepare(`
 		select
@@ -185,7 +151,7 @@ func NewDriver(sqlite *sql.DB, opts DriverOptions) (*Driver, error) {
 }
 
 func (d *Driver) delExpiredDaemon() {
-	t := time.NewTicker(d.opts.ExpiredSessionPruneInterval)
+	t := time.NewTicker(d.pruneInterval)
 	for range t.C {
 		if d.isClosed {
 			return
@@ -193,7 +159,7 @@ func (d *Driver) delExpiredDaemon() {
 
 		res, err := d.delExpiredStmt.Exec(time.Now().Unix())
 		if err != nil {
-			d.opts.Logger.Error("failed to delete expired Cap challenges",
+			d.logger.Error("failed to delete expired Cap challenges",
 				"service", "sqlitedriver.Driver",
 				"error", err,
 			)
@@ -202,14 +168,14 @@ func (d *Driver) delExpiredDaemon() {
 
 		count, err := res.RowsAffected()
 		if err != nil {
-			d.opts.Logger.Error("failed to get number of deleted expired Cap challenges",
+			d.logger.Error("failed to get number of deleted expired Cap challenges",
 				"service", "sqlitedriver.Driver",
 				"error", err,
 			)
 			continue
 		}
 
-		d.opts.Logger.Debug("deleted expired Cap challenges",
+		d.logger.Debug("deleted expired Cap challenges",
 			"service", "sqlitedriver.Driver",
 			"count", count,
 		)
@@ -227,7 +193,7 @@ func (d *Driver) Close() error {
 	if err := d.insertStmt.Close(); err != nil {
 		errs = append(errs, err)
 	}
-	if err := d.getIpCountStmt.Close(); err != nil {
+	if err := d.getIPCountStmt.Close(); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -247,21 +213,21 @@ func (d *Driver) Store(ctx context.Context, challenge *cap.Challenge, ip *netip.
 	var ipIntPtr *int64
 
 	// Rate limit if enabled.
-	if ip != nil && d.opts.RateLimitOpts != nil {
-		rl := d.opts.RateLimitOpts
+	if ip != nil && d.rlOpts != nil {
+		rl := d.rlOpts
 		ipVer, ipInt := cap.IpToInt64(ip, rl.IPv4SignificantBits, rl.IPv6SignificantBits)
 		ipVerPtr = &ipVer
 		ipIntPtr = &ipInt
 		windowStart := time.Now().Add(-rl.MaxChallengesWindow)
 
-		row := d.getIpCountStmt.QueryRowContext(ctx, ipVer, ipInt, windowStart.Unix())
+		row := d.getIPCountStmt.QueryRowContext(ctx, ipVer, ipInt, windowStart.Unix())
 
 		var count int
 		if err := row.Scan(&count); err != nil {
 			return fmt.Errorf(`sqlitedriver: failed to get number of Cap challenges by IP %s: %w`, ip.String(), err)
 		}
 
-		if count > rl.MaxChallengesPerIp {
+		if count > rl.MaxChallengesPerIP {
 			return cap.ErrRateLimited
 		}
 	}

@@ -109,7 +109,7 @@ func (s *Server) ChallengeHandler(res http.ResponseWriter, req *http.Request) {
 
 	chalData, err := s.cap.CreateChallenge(ctx, pkg.ChallengeRequest{
 		Params:        s.params,
-		Ip:            ip,
+		IP:            ip,
 		ValidDuration: s.validDuration,
 	})
 	if err != nil {

@@ -81,7 +81,7 @@ type ChallengeRequest struct {
 	// The IP address that is requesting the challenge.
 	// Can be nil.
 	// Used by the driver for optional rate limiting.
-	Ip *netip.Addr
+	IP *netip.Addr
 
 	// The duration for which the challenge is valid.
 	ValidDuration time.Duration
@@ -111,7 +111,7 @@ type ChallengeResponse struct {
 }
 
 // CreateChallenge generates a new challenge.
-// If MaxChallengesPerIp is set, it will return ErrMaxChallengesPerIp if the number of challenges for the IP is greater than or equal to MaxChallengesPerIp.
+// If the request IP is set and the driver has rate limiting enabled, the function may return ErrRateLimited.
 func (s *Cap) CreateChallenge(ctx context.Context, req ChallengeRequest) (*Challenge, error) {
 	// Generate a random challenge and redeem tokens
 	randBytes := make([]byte, 25)
@@ -129,7 +129,7 @@ func (s *Cap) CreateChallenge(ctx context.Context, req ChallengeRequest) (*Chall
 		Expires:        expires,
 	}
 
-	err := s.driver.Store(ctx, challenge, req.Ip)
+	err := s.driver.Store(ctx, challenge, req.IP)
 	if err != nil {
 		return nil, err
 	}
