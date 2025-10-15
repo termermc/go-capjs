@@ -4,4 +4,6 @@ use (
 	./cap
 	./sqlitedriver
 	./standalone
+
+	./demo
 )
