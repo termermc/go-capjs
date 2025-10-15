@@ -2,9 +2,8 @@ go 1.25.2
 
 use (
 	./cap
-	./sqlitedriver
-	./redisdriver
-	./standalone
-
 	./demo
+	./redisdriver
+	./sqlitedriver
+	./standalone
 )
