@@ -10,8 +10,8 @@ import (
 )
 
 type DB struct {
-	capDB        *sql.DB
-	standaloneDB *sql.DB
+	CapDB        *sql.DB
+	StandaloneDB *sql.DB
 
 	incrSolveStmt *sql.Stmt
 }
@@ -51,8 +51,8 @@ func NewDB(env *Env) (*DB, error) {
 	}
 
 	return &DB{
-		capDB:        capDB,
-		standaloneDB: standaloneDB,
+		CapDB:        capDB,
+		StandaloneDB: standaloneDB,
 
 		incrSolveStmt: incrSolveStmt,
 	}, nil

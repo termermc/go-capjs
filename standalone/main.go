@@ -1,66 +1,56 @@
 package main
 
 import (
+	"fmt"
+	"github.com/termermc/go-capjs/cap"
+	"github.com/termermc/go-capjs/cap/server"
+	"github.com/termermc/go-capjs/sqlitedriver"
+	"log/slog"
 	"os"
-	"strings"
+	"time"
 )
 
-const envAdminKey = "ADMIN_KEY"
-
-const envDataPath = "DATA_PATH"
-const defDataPath = "./.data"
-
-const envCorsOrigin = "CORS_ORIGIN"
-
-const envRateLimitIPHeader = "RATELIMIT_IP_HEADER"
-
-// Env is environment data for the standalone server.
-type Env struct {
-	// The admin key.
-	// Used as a password for authenticating.
-	AdminKey string
-
-	// The data storage path.
-	DataPath string
-
-	// The allowed CORS origins.
-	// An empty/nil slice means that all origins are allowed.
-	CorsOrigins []string
-
-	// The header to use for extracting the request IP.
-	// If empty, uses the remote address (not recommended).
-	RateLimitIPHeader string
-}
-
 func main() {
-	envData := &Env{}
+	jsonLogHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{})
+	logger := slog.New(jsonLogHandler)
 
-	envData.AdminKey = os.Getenv(envAdminKey)
-	if envData.AdminKey == "" {
-		panic("Missing " + envAdminKey + " environment variable")
-	}
-
-	if env := os.Getenv(envDataPath); env == "" {
-		envData.DataPath = defDataPath
-	} else {
-		envData.DataPath = env
-	}
-
-	if env := os.Getenv(envCorsOrigin); env != "" {
-		envData.CorsOrigins = strings.Split(env, ",")
-	}
-
-	if env := os.Getenv(envRateLimitIPHeader); env != "" {
-		envData.RateLimitIPHeader = env
-	}
+	env := MustResolveEnv()
 
 	// Try to create data directory.
-	err := os.MkdirAll(envData.DataPath, 0o700)
+	err := os.MkdirAll(env.DataPath, 0o700)
 
-	db, err := NewDB(envData)
+	db, err := NewDB(env)
 	if err != nil {
 		panic(err)
 	}
 
-	_ = db
+	var ipFunc server.IPExtractorFunc
+	if env.RateLimitIPHeader == "" {
+		ipFunc = server.RemoteAddrIPExtractor
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: Using direct IP from requests for rate limiting. If you are using a reverse proxy, please set RATELIMIT_IP_HEADER to the header that contains the request IP.\n")
+	} else {
+		ipFunc = server.NewHeaderIPExtractor(env.RateLimitIPHeader)
+	}
+
+	driver, err := sqlitedriver.NewDriver(db.CapDB,
+		sqlitedriver.WithRateLimit(
+			cap.WithMaxChallengesPerIP(env.RateLimitMaxChallengesPerIP),
+			cap.WithMaxChallengesWindow(time.Duration(env.RateLimitMaxChallengesWindowSeconds)*time.Second),
+		),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	c := cap.NewCap(driver)
+
+	capServer := NewHttpServer(
+		logger,
+		c,
+		db,
+		env,
+		ipFunc,
+	)
+
+	_ = capServer
 }
