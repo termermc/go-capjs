@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+// ChallengeParamChooserFunc is a function that chooses challenge params based on a request.
+// It can be used to dynamically select parameters based on things like the path, authentication, etc.
+// If it returns an error, the error will be passed to the server's error handler.
+type ChallengeParamChooserFunc func(req *http.Request) (pkg.ChallengeParams, error)
+
+// NewStaticChallengeParamsChooser creates a new ChallengeParamChooserFunc that uses a static params struct.
+// Will never return an error.
+func NewStaticChallengeParamsChooser(params pkg.ChallengeParams) ChallengeParamChooserFunc {
+	return func(req *http.Request) (pkg.ChallengeParams, error) {
+		return params, nil
+	}
+}
+
 // IPExtractorFunc is a function that extracts the client IP from a request.
 // If the function returns nil, the IP cannot be determined.
 type IPExtractorFunc func(req *http.Request) *netip.Addr
@@ -94,7 +107,7 @@ type ChallengeHandlerOpts struct {
 type Server struct {
 	cap *pkg.Cap
 
-	params        pkg.ChallengeParams
+	paramsFunc    ChallengeParamChooserFunc
 	validDuration time.Duration
 	ipFunc        IPExtractorFunc
 	errFunc       ErrorHandlerFunc
@@ -105,7 +118,7 @@ func NewServer(cap *pkg.Cap, opts ...func(h *Server)) *Server {
 	h := &Server{
 		cap: cap,
 
-		params:        pkg.DefaultChallengeParams,
+		paramsFunc:    NewStaticChallengeParamsChooser(pkg.DefaultChallengeParams),
 		validDuration: pkg.DefaultValidDuration,
 		ipFunc:        nil,
 		errFunc:       defaultErrFunc,
@@ -120,9 +133,19 @@ func NewServer(cap *pkg.Cap, opts ...func(h *Server)) *Server {
 
 // WithChallengeParams sets the parameters to use when creating new challenges.
 // When not specified, uses cap.DefaultChallengeParams.
+// To specify a dynamic params chooser, use WithChallengeParamsChooser.
 func WithChallengeParams(params pkg.ChallengeParams) func(h *Server) {
 	return func(h *Server) {
-		h.params = params
+		h.paramsFunc = NewStaticChallengeParamsChooser(params)
+	}
+}
+
+// WithChallengeParamsChooser sets the challenge params chooser to use when creating new challenges.
+// When not specified, see comment on WithChallengeParams.
+// If you just want to choose static params, use WithChallengeParamsChooser.
+func WithChallengeParamsChooser(chooser ChallengeParamChooserFunc) func(h *Server) {
+	return func(h *Server) {
+		h.paramsFunc = chooser
 	}
 }
 
@@ -166,8 +189,14 @@ func (s *Server) ChallengeHandler(res http.ResponseWriter, req *http.Request) {
 		ip = s.ipFunc(req)
 	}
 
+	params, err := s.paramsFunc(req)
+	if err != nil {
+		s.errFunc(err, res, req)
+		return
+	}
+
 	chalData, err := s.cap.CreateChallenge(ctx, pkg.ChallengeRequest{
-		Params:        s.params,
+		Params:        params,
 		IP:            ip,
 		ValidDuration: s.validDuration,
 	})

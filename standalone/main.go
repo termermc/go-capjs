@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"github.com/termermc/go-capjs/cap"
-	"github.com/termermc/go-capjs/cap/server"
 	"github.com/termermc/go-capjs/sqlitedriver"
 	"log/slog"
 	"os"
@@ -24,14 +22,6 @@ func main() {
 		panic(err)
 	}
 
-	var ipFunc server.IPExtractorFunc
-	if env.RateLimitIPHeader == "" {
-		ipFunc = server.RemoteAddrIPExtractor
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: Using direct IP from requests for rate limiting. If you are using a reverse proxy, please set RATELIMIT_IP_HEADER to the header that contains the request IP.\n")
-	} else {
-		ipFunc = server.NewHeaderIPExtractor(env.RateLimitIPHeader)
-	}
-
 	driver, err := sqlitedriver.NewDriver(db.CapDB,
 		sqlitedriver.WithRateLimit(
 			cap.WithMaxChallengesPerIP(env.RateLimitMaxChallengesPerIP),
@@ -44,13 +34,14 @@ func main() {
 
 	c := cap.NewCap(driver)
 
-	capServer := NewHttpServer(
+	httpServer := NewHttpServer(
 		logger,
 		c,
 		db,
 		env,
-		ipFunc,
 	)
 
-	_ = capServer
+	if err = httpServer.Listen(); err != nil {
+		panic(err)
+	}
 }
